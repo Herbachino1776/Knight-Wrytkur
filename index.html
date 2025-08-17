@@ -1,0 +1,881 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Venus Hellfighter vs. Holy Angels — Citadel Build</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#000; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    }
+    #canvas { width:100vw; height:100vh; display:block; background:#000; }
+    #hud { position: fixed; left:10px; top:10px; width:140px; height:8px; background:rgba(255,255,255,0.08); border-radius:8px; overflow:hidden; }
+    #stam { height:100%; background: linear-gradient(90deg,#7cffd9,#b2ff8a); width:100%; transition: width .1s linear; }
+    #hud.hidden { opacity:0; transition: opacity 1s ease; }
+
+    #gold { position: fixed; right: 10px; top: 10px; font-weight: 600; background: rgba(0,0,0,0.45); padding: 4px 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); }
+
+    #hint { position: fixed; left:50%; transform: translateX(-50%); top: 10px; font-size: 12px; opacity:0.9; background: rgba(0,0,0,0.45); padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); }
+
+    .nameplate { position: absolute; color:#d0b0ff; font-size: 11px; text-shadow: 0 0 8px #6a2cff; transform: translate(-50%,-100%); pointer-events:none; white-space: nowrap; opacity:0; transition: opacity .2s ease; }
+    .nameplate.show { opacity: 0.9; }
+
+    #ui { position: fixed; inset: 0; pointer-events: none; }
+    #shop {
+      position: fixed; left:50%; top:50%; transform: translate(-50%,-50%);
+      width: min(92vw, 420px); background: rgba(10,0,20,0.9); border:1px solid rgba(180,140,255,0.3); border-radius: 12px;
+      padding: 12px; display:none; pointer-events: auto;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    }
+    #shop h3 { margin: 0 0 8px 0; font-size: 16px; }
+    #shop .item { display:flex; justify-content: space-between; align-items:center; padding: 8px; border-radius:8px; margin: 6px 0; background: rgba(255,255,255,0.03); }
+    #shop button { pointer-events: auto; padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); background: rgba(80,40,140,0.6); color: #fff; }
+    #shop .close { position:absolute; right:8px; top:8px; background: rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.1); }
+    #shop .meta { font-size: 12px; opacity: 0.8; }
+
+    #interactBar {
+      position: fixed; left:50%; bottom: 18%; transform: translateX(-50%);
+      width: 220px; height: 8px; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.08);
+      display:none; pointer-events: none;
+    }
+    #interactFill { height:100%; width:0%; background: linear-gradient(90deg,#e6ff87,#ffb870); }
+
+    /* small toast for pickups */
+    #toast {
+      position: fixed; left: 50%; bottom: 8%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.5); padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+      display:none; font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="hud"><div id="stam"></div></div>
+  <div id="gold">Gold: <span id="goldAmt">0</span></div>
+  <div id="hint">Tap to start audio • Drag left = move/strafe • Drag right = look • Quick tap = attack • Long press/E = interact</div>
+
+  <div id="ui"></div>
+
+  <div id="interactBar"><div id="interactFill"></div></div>
+
+  <div id="shop">
+    <button class="close" id="shopClose">✕</button>
+    <h3>🜏 Cursed Goods</h3>
+    <div class="meta">Whispered prices. Your fate is yours.</div>
+    <div id="shopItems"></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+  (function(){
+    const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
+    const lerp = (a,b,t)=>a+(b-a)*t;
+    const TAU = Math.PI*2;
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', {alpha:false});
+    let W=0,H=0,halfH=0,aspect=1;
+    function resize(){
+      const dpr = Math.min(devicePixelRatio||1, 2);
+      canvas.width = Math.floor(innerWidth * dpr);
+      canvas.height = Math.floor(innerHeight * dpr);
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+      W = canvas.width; H = canvas.height; halfH = H/2; aspect = W/H;
+      ctx.setTransform(1,0,0,1,0,0);
+    }
+    addEventListener('resize', resize, {passive:true}); resize();
+
+    // ==================== WORLD MAP (EXPANDED) ====================
+    // Legend: 0 empty, 1 obsidian wall, 2 hellgate, 3 lever stone, 4 brazier sprite, 5 citadel face (heaven walls)
+    const rows = [
+      "1111111111111111111111111111111111",
+      "1..............1.................11",
+      "1....4..1......1...4..............1",
+      "1..............1..................1",
+      "1.....111......1..................1",
+      "1.....1.1......1..................1",
+      "1..P..1.1..3...1...G..............1",
+      "1.....1.1......1..................1",
+      "1.....111......1..................1",
+      "1..............1..................1",
+      "1..............1..................1",
+      "1..1111111111111..................1",
+      "1..1...........1..................1",
+      "1..1....44444..1..................1",
+      "1..1...........1..................1",
+      "1..11111111111.1..................1",
+      "1..............1..................1",
+      "1..............1..................1",
+      "1....444.......1..................1",
+      "1..............1...........444....1",
+      "1..............1..................1",
+      "1..............1..................1",
+      "1..............11111111111111111111",
+      "1.................................51",
+      "1.................................51",
+      "1.................................51",
+      "1.................................51",
+      "1.................................51",
+      "1.................................51",
+      "1.................................51",
+      "11111111111111111111111111111111111",
+    ].map(r=>r.replace(/G/g,'2').replace(/P/g,'.'));
+    const MAP_W = rows[0].length, MAP_H = rows.length;
+    const grid = new Int8Array(MAP_W*MAP_H);
+    for(let y=0;y<MAP_H;y++){
+      for(let x=0;x<MAP_W;x++){
+        const ch = rows[y][x]||'1';
+        grid[y*MAP_W+x] = (ch==='1')?1:(ch==='2')?2:(ch==='3')?3:(ch==='5')?5:0;
+      }
+    }
+    function tileAt(x,y){
+      if(x<0||y<0||x>=MAP_W||y>=MAP_H) return 1;
+      return grid[(y|0)*MAP_W+(x|0)];
+    }
+    function setTile(x,y,v){
+      if(x<0||y<0||x>=MAP_W||y>=MAP_H) return;
+      grid[(y|0)*MAP_W+(x|0)] = v;
+    }
+
+    // Player
+    const player = {
+      x: 3.5, y: 6.5, ang: 0, fov: Math.PI/3, speed: 2.0, turnSpeed: 1.8,
+      stamina: 1, stamMax: 1, stamRegen: 0.25, stamUse: 0.35,
+      attackCooldown: 0, gold: 0, inv: { brimstone: 0, relic: 0 }
+    };
+
+    // Gate + two ritual levers (inside + outside)
+    const gate = {x: 15, y:6, open:false, anim:0};
+    setTile(gate.x, gate.y, 2);
+    const levers = [
+      {x:11,y:6, toggled:false, name:"Inner Ritual Stone"},
+      {x:18,y:6, toggled:false, name:"Outer Ritual Stone"}
+    ];
+    levers.forEach(L=>setTile(L.x, L.y, 3));
+
+    // NPCs in hub
+    const sprites = [];
+    const addNPC=(name,x,y)=>sprites.push({type:'npc', name, x, y, alive:true, alpha:1});
+    addNPC('Cursed Vendor', 5.5, 3.5);
+    addNPC('Potion Broker', 9.5, 3.5);
+
+    // Braziers along paths
+    const braziers = [{x:4.5,y:14.5},{x:5.5,y:14.5},{x:6.5,y:14.5},{x:7.5,y:14.5},{x:8.5,y:14.5},{x:22.5,y:19.5},{x:25.5,y:19.5},{x:28.0,y:19.5}];
+    for(const b of braziers) sprites.push({type:'brazier', x:b.x, y:b.y, alive:true});
+
+    // Enemies in wastes
+    function spawnMagma(x,y){ sprites.push({type:'magma', x,y, hp:2, alive:true, t:0}); }
+    function spawnAngel(x,y){ sprites.push({type:'angel', x,y, hp:3, alive:true, t:0}); }
+    spawnMagma(12.5,13.5);
+    spawnMagma(14.5,18.5);
+    spawnAngel(24.5,20.5); // on citadel approach
+
+    // Loot system
+    function spawnLoot(kind,x,y){
+      const value = kind==='gold' ? (5+Math.floor(Math.random()*6)) : 1;
+      sprites.push({type:'loot', kind, value, x, y, alive:true, t:0});
+    }
+
+    // Citadel region (for choir swell + glow)
+    const citadelRegion = { x1: MAP_W-6, y1: 23, x2: MAP_W-2, y2: 29 };
+    function distToCitadel(px,py){
+      // distance to rectangle
+      const cx = clamp(px, citadelRegion.x1, citadelRegion.x2);
+      const cy = clamp(py, citadelRegion.y1, citadelRegion.y2);
+      const dx = px - cx, dy = py - cy;
+      return Math.hypot(dx,dy);
+    }
+
+    // ==================== INPUT ====================
+    let lookDX=0, lookDY=0, moveDX=0, moveDY=0;
+    let longPress=false, pressStart=0, pressing=false, movedTooMuch=false, pressX=0, pressY=0;
+    let lastTap=0, dragging=false;
+
+    const hint = document.getElementById('hint');
+    const stamEl = document.getElementById('stam');
+    const hud = document.getElementById('hud');
+    const goldAmt = document.getElementById('goldAmt');
+    const interactBar = document.getElementById('interactBar');
+    const interactFill = document.getElementById('interactFill');
+    const toast = document.getElementById('toast');
+
+    function showToast(msg){
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(()=> toast.style.display='none', 1200);
+    }
+
+    function resetGestures(){ lookDX=lookDY=moveDX=moveDY=0; pressing=false; movedTooMuch=false; }
+
+    addEventListener('contextmenu', e=>e.preventDefault());
+    addEventListener('gesturestart', e=>e.preventDefault());
+
+    document.addEventListener('touchstart', (e)=>{
+      const now = performance.now();
+      if(now - lastTap < 250){ quickAttack(); }
+      lastTap = now;
+
+      ensureAudio();
+      hint.style.display='none';
+
+      // track initial for long-press
+      pressing = true; longPress=false; pressStart = now;
+      const t0 = e.changedTouches[0];
+      if(t0){ pressX = t0.clientX; pressY = t0.clientY; }
+
+      e.preventDefault();
+    }, {passive:false});
+
+    document.addEventListener('touchmove', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      let left = Array.from(e.touches).filter(t=>t.clientX<innerWidth*0.5);
+      let right = Array.from(e.touches).filter(t=>t.clientX>=innerWidth*0.5);
+      if(left[0]){ moveDX = (left[0].clientX/innerWidth)*2-1; moveDY = (left[0].clientY/innerHeight)*2-1; } else { moveDX=moveDY=0; }
+      if(right[0]){ lookDX = (right[0].clientX/innerWidth)*2-1; lookDY = (right[0].clientY/innerHeight)*2-1; } else { lookDX=lookDY=0; }
+      // long press cancel on large move
+      const t0 = e.touches[0];
+      if(t0 && pressing){
+        const dx = t0.clientX - pressX, dy = t0.clientY - pressY;
+        if(Math.hypot(dx,dy) > 24) movedTooMuch = true;
+      }
+      e.preventDefault();
+    }, {passive:false});
+
+    document.addEventListener('touchend', (e)=>{
+      if(pressing){
+        const now = performance.now();
+        if(!movedTooMuch && now - pressStart > 550){
+          longPress = true;
+          doInteract();
+        }
+      }
+      pressing = false; movedTooMuch=false;
+      if(e.touches.length===0) resetGestures();
+      e.preventDefault();
+    }, {passive:false});
+
+    canvas.addEventListener('mousedown', (e)=>{ dragging=true; ensureAudio(); hint.style.display='none'; });
+    addEventListener('mouseup', ()=>{ dragging=false; });
+    addEventListener('mousemove', (e)=>{ if(dragging){ lookDX = clamp(e.movementX/100, -1, 1); lookDY = clamp(e.movementY/100, -1, 1); } });
+    addEventListener('click', ()=>{ quickAttack(); });
+    const keys = {};
+    addEventListener('keydown', e=>{ keys[e.code]=true; if(e.code==='Space') quickAttack(); if(e.code==='KeyE') doInteract(); });
+    addEventListener('keyup', e=>keys[e.code]=false);
+
+    // ==================== AUDIO ====================
+    let AC=null, AUDIO=null;
+    function ensureAudio(){
+      if(AC) return;
+      AC = new (window.AudioContext||window.webkitAudioContext)();
+
+      // Busses
+      const master = AC.createGain(); master.gain.value=0.2; master.connect(AC.destination);
+      const music = AC.createGain(); music.gain.value=0.6; music.connect(master);
+      const sfx = AC.createGain(); sfx.gain.value=1.0; sfx.connect(master);
+
+      const ost = makeOST(AC, music); // returns an object w/ controls
+      AUDIO = {
+        master, music, sfx,
+        ost,
+        sfxSwing, sfxHitDemon, sfxHitAngel, sfxGate, sfxInteract, sfxShopOpen, sfxFanfare
+      };
+    }
+
+    // Structured OST: pads + choir + lead motif in sections; choir swell controllable
+    function makeOST(ac, musicBus){
+      const padGain = ac.createGain(); padGain.gain.value=0.0; padGain.connect(musicBus);
+      const choirGain = ac.createGain(); choirGain.gain.value=0.0; choirGain.connect(musicBus);
+      const leadGain = ac.createGain(); leadGain.gain.value=0.0; leadGain.connect(musicBus);
+      const drumGain = ac.createGain(); drumGain.gain.value=0.0; drumGain.connect(musicBus);
+
+      // Pads (pipe/organ-ish cluster)
+      const base = 55; // A1
+      const padNotes = [0, 5, 3, 0, -2, 3, 5, 7]; // SECTION A/B rotation
+      const padOsc = [];
+      for(let i=0;i<4;i++){
+        const o = ac.createOscillator(); o.type='sawtooth';
+        const g = ac.createGain(); g.gain.value=0.0;
+        o.connect(g).connect(padGain); o.start();
+        padOsc.push({o,g,intv:[0,4,7,11][i]});
+      }
+      // Choir cluster
+      const choir = ac.createOscillator(); choir.type='triangle';
+      choir.connect(choirGain); choir.frequency.value=110; choir.start();
+      // Lead motif (organ reed)
+      const lead = ac.createOscillator(); lead.type='square';
+      lead.connect(leadGain); lead.start();
+      // Tribal drum (thump)
+      const drum = ac.createOscillator(); drum.type='sine';
+      const drumEnv = ac.createGain(); drumEnv.gain.value=0.0;
+      drum.connect(drumEnv).connect(drumGain); drum.start();
+
+      // Schedules
+      let t0 = ac.currentTime;
+      const bar = 5.5; // long bars
+      function schedule(){
+        const now = ac.currentTime;
+        const sectionIdx = Math.floor((now - t0)/(4*bar)) % 2; // A/B
+        const rootSemi = padNotes[Math.floor((now - t0)/bar) % padNotes.length];
+        const root = base * Math.pow(2, rootSemi/12);
+
+        // pads
+        for(const {o,g,intv} of padOsc){
+          const f = root * Math.pow(2, intv/12);
+          o.frequency.setTargetAtTime(f, now, 0.3);
+          g.gain.setTargetAtTime(0.10 + (intv*0.003), now, 0.8);
+        }
+        padGain.gain.setTargetAtTime(0.6, now, 1.0);
+
+        // choir baseline
+        choir.frequency.setTargetAtTime(root*2, now, 1.5);
+        choirGain.gain.setTargetAtTime(0.12 + sectionIdx*0.05, now, 1.2);
+
+        // lead motif: simple rising/falling line over the bar
+        const motif = sectionIdx===0 ? [0,4,7,11,7,4,0,-2] : [0,7,9,7,4,0,4,2];
+        for(let i=0;i<motif.length;i++){
+          const tt = now + i*(bar/motif.length);
+          const f = root * Math.pow(2, motif[i]/12) * 2;
+          lead.frequency.setValueAtTime(f, tt);
+          leadGain.gain.cancelScheduledValues(tt);
+          leadGain.gain.setValueAtTime(0.0, tt);
+          leadGain.gain.linearRampToValueAtTime(0.12, tt+0.05);
+          leadGain.gain.exponentialRampToValueAtTime(0.0001, tt+0.45);
+        }
+
+        // drum pulses
+        const beats = 4;
+        for(let i=0;i<beats;i++){
+          const tt = now + i*(bar/beats);
+          drumEnv.gain.setValueAtTime(0.0, tt);
+          drumEnv.gain.linearRampToValueAtTime(0.35, tt+0.02);
+          drumEnv.gain.exponentialRampToValueAtTime(0.0001, tt+0.4);
+          drum.frequency.setValueAtTime(70, tt);
+          drum.frequency.exponentialRampToValueAtTime(36, tt+0.3);
+        }
+        drumGain.gain.setTargetAtTime(0.6, now, 1.0);
+
+        setTimeout(schedule, bar*1000*0.95);
+      }
+      schedule();
+
+      return {
+        setCitadelProximity: (p)=>{
+          // p: 0..1 proximity (1 = at citadel). Scale choir pad swell & add shimmer to lead.
+          const now = ac.currentTime;
+          choirGain.gain.setTargetAtTime(0.12 + 0.5*p, now, 0.6);
+          padGain.gain.setTargetAtTime(0.6 + 0.25*p, now, 1.2);
+          leadGain.gain.setTargetAtTime(0.12 + 0.15*p, now, 0.3);
+        }
+      };
+    }
+
+    function sfxSwing(){
+      if(!AC) return;
+      const n=AC.currentTime;
+      const src = AC.createOscillator(); src.type='sawtooth';
+      const g = AC.createGain(); g.gain.value=0.0;
+      src.connect(g).connect(AUDIO.sfx);
+      src.frequency.setValueAtTime(280, n);
+      src.frequency.exponentialRampToValueAtTime(520, n+0.08);
+      g.gain.linearRampToValueAtTime(0.25, n+0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, n+0.25);
+      src.start(n); src.stop(n+0.35);
+    }
+    function sfxHitDemon(){
+      if(!AC) return; const n=AC.currentTime;
+      const noise=AC.createBufferSource(); noise.buffer=makeNoiseBuffer(AC, 0.15);
+      const g=AC.createGain(); g.gain.value=0.6;
+      const bp=AC.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=250; bp.Q.value=0.6;
+      noise.connect(bp).connect(g).connect(AUDIO.sfx);
+      noise.start(n); noise.stop(n+0.18);
+    }
+    function sfxHitAngel(){
+      if(!AC) return; const n=AC.currentTime;
+      const osc=AC.createOscillator(); const g=AC.createGain(); osc.type='square'; g.gain.value=0.0;
+      osc.connect(g).connect(AUDIO.sfx); osc.frequency.value=880;
+      g.gain.linearRampToValueAtTime(0.3, n+0.02); g.gain.exponentialRampToValueAtTime(0.0001, n+0.35);
+      osc.start(n); osc.stop(n+0.4);
+      const o2=AC.createOscillator(); const g2=AC.createGain(); o2.type='sine'; g2.gain.value=0.0;
+      o2.connect(g2).connect(AUDIO.sfx); o2.frequency.value=1320;
+      g2.gain.linearRampToValueAtTime(0.15, n+0.01); g2.gain.exponentialRampToValueAtTime(0.0001, n+0.45);
+      o2.start(n); o2.stop(n+0.5);
+    }
+    function sfxGate(){
+      if(!AC) return; const n=AC.currentTime;
+      const noise=AC.createBufferSource(); noise.buffer=makeNoiseBuffer(AC,0.6);
+      const g=AC.createGain(); g.gain.value=0.0;
+      const lp=AC.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
+      noise.connect(lp).connect(g).connect(AUDIO.sfx);
+      g.gain.linearRampToValueAtTime(0.45, n+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, n+1.2);
+      noise.start(n); noise.stop(n+1.3);
+    }
+    function sfxInteract(){
+      if(!AC) return; const n=AC.currentTime;
+      const osc=AC.createOscillator(); const g=AC.createGain();
+      osc.type='triangle'; osc.frequency.value=220; g.gain.value=0.0;
+      osc.connect(g).connect(AUDIO.sfx);
+      g.gain.linearRampToValueAtTime(0.25, n+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, n+0.5);
+      osc.start(n); osc.stop(n+0.6);
+    }
+    function sfxShopOpen(){
+      if(!AC) return; const n=AC.currentTime;
+      const noise=AC.createBufferSource(); noise.buffer=makeNoiseBuffer(AC,0.2);
+      const g=AC.createGain(); g.gain.value=0.0;
+      const bp=AC.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=900; bp.Q.value=6;
+      noise.connect(bp).connect(g).connect(AUDIO.sfx);
+      g.gain.linearRampToValueAtTime(0.3, n+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, n+0.5);
+      noise.start(n); noise.stop(n+0.6);
+    }
+    function sfxFanfare(){
+      if(!AC) return; const n=AC.currentTime;
+      const o=AC.createOscillator(); const g=AC.createGain(); o.type='square'; g.gain.value=0.0;
+      o.connect(g).connect(AUDIO.sfx);
+      o.frequency.setValueAtTime(660, n);
+      o.frequency.exponentialRampToValueAtTime(1320, n+0.4);
+      g.gain.linearRampToValueAtTime(0.25, n+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, n+1.0);
+      o.start(n); o.stop(n+1.1);
+    }
+    function makeNoiseBuffer(ac, dur=0.2){
+      const length = Math.floor(ac.sampleRate*dur);
+      const buffer = ac.createBuffer(1,length,ac.sampleRate);
+      const data = buffer.getChannelData(0);
+      for(let i=0;i<length;i++) data[i] = (Math.random()*2-1) * Math.exp(-i/(ac.sampleRate*0.02));
+      return buffer;
+    }
+
+    // ==================== COMBAT / LOOT ====================
+    const particles = [];
+    function quickAttack(){
+      if(player.attackCooldown>0 || player.stamina<0.2) return;
+      player.attackCooldown=0.5;
+      player.stamina = Math.max(0, player.stamina - 0.35);
+      if(AUDIO) AUDIO.sfxSwing();
+      const range=2.8; const fwd={x:Math.cos(player.ang), y:Math.sin(player.ang)};
+      sprites.forEach(s=>{
+        if(!s.alive) return;
+        if(s.type==='npc'||s.type==='brazier'||s.type==='loot') return;
+        const dx=s.x-player.x, dy=s.y-player.y, dist=Math.hypot(dx,dy);
+        if(dist>range) return;
+        const dir=(dx*fwd.x + dy*fwd.y) / (dist||1);
+        if(dir<0.1) return;
+        s.hp=(s.hp||1)-1;
+        (s.type==='magma') ? (AUDIO&&AUDIO.sfxHitDemon()) : (AUDIO&&AUDIO.sfxHitAngel());
+        s.hitTime=performance.now();
+        if(s.hp<=0){
+          s.alive=false; s.deathT=0; spawnDeathParticles(s);
+          // loot
+          if(s.type==='magma'){ spawnLoot('brimstone', s.x, s.y); if(Math.random()<0.5) spawnLoot('gold', s.x+0.2, s.y-0.1); }
+          else { spawnLoot('relic', s.x, s.y); spawnLoot('gold', s.x+0.2, s.y); }
+        }
+      });
+    }
+    function spawnDeathParticles(s){
+      const N=28;
+      for(let i=0;i<N;i++){
+        const a=Math.random()*TAU, sp=1+Math.random()*1.5, life=0.7+Math.random()*0.6;
+        const color = (s.type==='magma') ? 'rgba(255,70,10,1)' : 'rgba(255,230,120,1)';
+        particles.push({ x:s.x, y:s.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life, t:0, color, kind: s.type==='magma'?'lava':'feather' });
+      }
+    }
+
+    // ==================== INTERACTION (LEVER / NPC SHOP) ====================
+    let interactProgress=0, interacting=false;
+    function doInteract(){
+      const target = getInteractTarget();
+      if(!target){ return; }
+      if(target.kind==='lever'){
+        interacting=true; interactProgress=0; showInteractBar(true);
+        if(AUDIO) AUDIO.sfxInteract();
+      } else if(target.kind==='npc'){
+        openShop(target.sprite);
+        if(AUDIO) AUDIO.sfxShopOpen();
+      } else if(target.kind==='loot'){
+        pickupLoot(target.sprite);
+      }
+    }
+    function showInteractBar(v){ interactBar.style.display = v? 'block':'none'; }
+    function getInteractTarget(){
+      // priority: loot within 1.2, lever within ~1.6 if looking at it, npc within ~1.8 if looking
+      // Loot
+      for(const s of sprites){
+        if(s.type==='loot' && s.alive){
+          const d = Math.hypot(s.x-player.x, s.y-player.y);
+          if(d<1.2) return {kind:'loot', sprite:s};
+        }
+      }
+      // Facing tile
+      const fx = player.x + Math.cos(player.ang)*1.0;
+      const fy = player.y + Math.sin(player.ang)*1.0;
+      const t = tileAt(fx, fy);
+      if(t===3){
+        // which lever is nearest
+        let closest=null, cd=1e9;
+        for(const L of levers){
+          const d=Math.hypot(L.x+0.5 - player.x, L.y+0.5 - player.y);
+          if(d<cd){ cd=d; closest=L; }
+        }
+        if(closest && cd<1.8) return {kind:'lever', lever: closest};
+      }
+      // NPC facing
+      let best=null, bestDot=0, bestD=99;
+      const fwd={x:Math.cos(player.ang), y:Math.sin(player.ang)};
+      for(const s of sprites){
+        if(s.type!=='npc'||!s.alive) continue;
+        const dx=s.x-player.x, dy=s.y-player.y;
+        const dist=Math.hypot(dx,dy); if(dist>2.2) continue;
+        const dir=(dx*fwd.x + dy*fwd.y)/(dist||1);
+        if(dir>bestDot){ bestDot=dir; best=s; bestD=dist; }
+      }
+      if(best) return {kind:'npc', sprite:best};
+      return null;
+    }
+
+    function updateInteraction(dt){
+      if(!interacting) return;
+      const target = getInteractTarget();
+      if(!target || target.kind!=='lever'){ interacting=false; showInteractBar(false); return; }
+      interactProgress = clamp(interactProgress + dt/1.2, 0, 1);
+      interactFill.style.width = Math.floor(interactProgress*100) + '%';
+      if(interactProgress>=1){
+        interacting=false; showInteractBar(false);
+        // toggle lever
+        target.lever.toggled = !target.lever.toggled;
+        if(AUDIO) AUDIO.sfxGate();
+      }
+    }
+
+    function pickupLoot(s){
+      s.alive=false;
+      if(s.kind==='gold'){ player.gold += s.value; goldAmt.textContent = player.gold; showToast(`+${s.value} gold`); }
+      if(s.kind==='brimstone'){ player.inv.brimstone += s.value; showToast(`+${s.value} brimstone shard`); }
+      if(s.kind==='relic'){ player.inv.relic += s.value; showToast(`+${s.value} radiant relic`); }
+    }
+
+    // Shop
+    const shopEl = document.getElementById('shop');
+    const shopItemsEl = document.getElementById('shopItems');
+    document.getElementById('shopClose').onclick=()=> closeShop();
+    function openShop(npc){
+      shopItemsEl.innerHTML='';
+      const items=[
+        {id:'potion', name:'Cursed Elixir', desc:'Restore stamina instantly to full.', cost: 8, buy:()=>{ player.stamina=player.stamMax; }},
+        {id:'charm', name:'Blister Charm', desc:'+10% move for 3 min (demo: 45s).', cost: 15, buy:()=>{ speedBoostTimer = 45; }},
+        {id:'idol', name:'Venus Idol', desc:'Convert 1 relic → 12 gold.', cost: 0, special:true, buy:()=>{
+          if(player.inv.relic>0){ player.inv.relic--; player.gold += 12; goldAmt.textContent = player.gold; showToast('+12 gold (idol)'); }
+        }},
+      ];
+      for(const it of items){
+        const row = document.createElement('div'); row.className='item';
+        const L = document.createElement('div'); L.innerHTML = `<div>${it.name}</div><div class="meta">${it.desc}</div>`;
+        const R = document.createElement('div');
+        const btn = document.createElement('button');
+        btn.textContent = it.special ? 'Use' : `Buy (${it.cost}g)`;
+        btn.onclick = ()=>{
+          if(!it.special){
+            if(player.gold>=it.cost){
+              player.gold-=it.cost; goldAmt.textContent = player.gold; it.buy(); showToast(`${it.name} acquired`);
+            } else { showToast('Not enough gold'); }
+          } else { it.buy(); }
+        };
+        R.appendChild(btn);
+        row.appendChild(L); row.appendChild(R);
+        shopItemsEl.appendChild(row);
+      }
+      shopEl.style.display='block';
+      shopEl.style.pointerEvents='auto';
+    }
+    function closeShop(){ shopEl.style.display='none'; }
+
+    let speedBoostTimer = 0;
+
+    // ==================== RENDERING ====================
+    function castAndRender(dt,t){
+      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+      drawSky(t);
+      drawLava(t);
+      drawWalls(t);
+      drawSprites(t);
+      drawWeapon(t);
+      drawParticles(dt);
+      // HUD
+      const pct = Math.floor(player.stamina/player.stamMax*100);
+      const hudEl = document.getElementById('hud');
+      document.getElementById('stam').style.width = pct+'%';
+      hudEl.classList.toggle('hidden', pct>=99);
+    }
+
+    function drawSky(t){
+      const g = ctx.createLinearGradient(0,0,0,H*0.5);
+      g.addColorStop(0, '#8acb00');
+      g.addColorStop(1, '#352e0b');
+      ctx.fillStyle=g; ctx.fillRect(0,0,W,halfH);
+      const starCount=140;
+      for(let i=0;i<starCount;i++){
+        const x=(i*199)%W, y=((i*911)%halfH);
+        const tw=(Math.sin(t*0.5 + i)*0.5+0.5)*0.7 + 0.3;
+        ctx.globalAlpha=tw; ctx.fillStyle='#ff1e1e'; ctx.fillRect(x,y,2,2);
+      }
+      ctx.globalAlpha=1;
+      const r=Math.min(W,H)*0.14, vx=W*0.78, vy=H*0.18;
+      ctx.beginPath(); ctx.arc(vx,vy,r,0,TAU); ctx.fillStyle='#1a110e'; ctx.fill();
+      ctx.lineWidth=2; ctx.strokeStyle='rgba(255,220,150,0.15)'; ctx.stroke();
+    }
+
+    function drawLava(t){
+      const img=ctx.createImageData(W,halfH);
+      const data=img.data; const ty=t*0.6;
+      for(let y=0;y<halfH;y++){
+        const row=(y*W)<<2; const vdist=y/halfH;
+        for(let x=0;x<W;x++){
+          const u=x/W;
+          let n=0;
+          n += Math.sin((u*12 + ty))*0.5+0.5;
+          n += Math.sin((u*24 - ty*0.8 + y*0.02))*0.5+0.5;
+          n += Math.sin((u*7.1 + y*0.03 - ty*0.4))*0.5+0.5;
+          n/=3;
+          const heat = Math.pow(n, 2.2) * (0.6 + 0.4*(1-vdist));
+          const R = 60 + heat*200, G = 10 + heat*80, B = 5 + heat*20;
+          const fog = 1 - Math.pow(vdist,1.6);
+          const idx=row+(x<<2);
+          data[idx]= (R*fog)|0; data[idx+1]=(G*fog)|0; data[idx+2]=(B*fog)|0; data[idx+3]=255;
+        }
+      }
+      ctx.putImageData(img,0,halfH);
+      // infernal glow
+      const rad=Math.min(W,H)*0.36;
+      const rg=ctx.createRadialGradient(W*0.5,H*0.65,rad*0.2,W*0.5,H*0.65,rad);
+      rg.addColorStop(0,'rgba(255,80,40,0.22)'); rg.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+    }
+
+    function drawWalls(t){
+      const px=player.x, py=player.y;
+      const dirX=Math.cos(player.ang), dirY=Math.sin(player.ang);
+      const planeX=Math.cos(player.ang+Math.PI/2)*Math.tan(player.fov/2);
+      const planeY=Math.sin(player.ang+Math.PI/2)*Math.tan(player.fov/2);
+
+      for(let x=0;x<W;x+=1){
+        const camX=2*x/W - 1;
+        const rayDirX=dirX + planeX*camX;
+        const rayDirY=dirY + planeY*camX;
+
+        let mapX=Math.floor(px), mapY=Math.floor(py);
+        const deltaDistX=Math.abs(1/(rayDirX||1e-6));
+        const deltaDistY=Math.abs(1/(rayDirY||1e-6));
+        let stepX, stepY, sideDistX, sideDistY;
+        if(rayDirX<0){ stepX=-1; sideDistX=(px-mapX)*deltaDistX; } else { stepX=1; sideDistX=(mapX+1.0-px)*deltaDistX; }
+        if(rayDirY<0){ stepY=-1; sideDistY=(py-mapY)*deltaDistY; } else { stepY=1; sideDistY=(mapY+1.0-py)*deltaDistY; }
+
+        let hit=0, side=0, tile=0;
+        while(!hit && mapX>=0 && mapY>=0 && mapX<MAP_W && mapY<MAP_H){
+          if(sideDistX<sideDistY){ sideDistX+=deltaDistX; mapX+=stepX; side=0; }
+          else { sideDistY+=deltaDistY; mapY+=stepY; side=1; }
+          tile = tileAt(mapX,mapY);
+          if(tile!==0) hit=1;
+        }
+        if(!hit) continue;
+        let dist = side===0 ? (sideDistX-deltaDistX) : (sideDistY-deltaDistY);
+        if(dist<=0) dist=0.0001;
+        const lineH = Math.floor(H/dist);
+        const drawStart = -lineH/2 + H/2;
+        const drawEnd = lineH/2 + H/2;
+        const fog = clamp(1 - (dist/20), 0, 1);
+
+        let col;
+        if(tile===1){
+          const flick = (Math.sin(t*5 + x*0.03)*0.5+0.5)*0.2;
+          col = {r: 20, g: 15+Math.floor(120*flick), b: 25};
+        } else if(tile===2){
+          col = {r: 120+Math.floor(Math.sin(t*5)*30), g: 40, b: 10};
+          // opening animation: reduce height visually
+          const open = gate.open ? gate.anim : 0;
+          const mid = (drawStart+drawEnd)/2;
+          ctx.strokeStyle = `rgb(${(col.r*fog)|0},${(col.g*fog)|0},${(col.b*fog)|0})`;
+          ctx.beginPath();
+          ctx.moveTo(x, lerp(drawStart, mid, open));
+          ctx.lineTo(x, lerp(drawEnd, mid, open));
+          ctx.stroke();
+          continue;
+        } else if(tile===5){
+          // Citadel: bright, emissive, with angelic shimmer
+          const pulse = (Math.sin(t*2)+1)*0.5;
+          col = {r: 245, g: 245, b: 255};
+          const e = 0.45 + 0.35*pulse;
+          col.r = Math.min(255, col.r + 255*e);
+          col.g = Math.min(255, col.g + 255*e);
+          col.b = Math.min(255, col.b + 255*e);
+        } else if(tile===3){
+          col = {r: 40, g: 100, b: 40};
+        } else {
+          col = {r: 60, g: 20, b: 10};
+        }
+        col.r=(col.r*fog)|0; col.g=(col.g*fog)|0; col.b=(col.b*fog)|0;
+        ctx.strokeStyle = `rgb(${col.r},${col.g},${col.b})`;
+        ctx.beginPath(); ctx.moveTo(x, drawStart); ctx.lineTo(x, drawEnd); ctx.stroke();
+      }
+    }
+
+    function drawSprites(t){
+      const projected=[];
+      for(let i=0;i<sprites.length;i++){
+        const s=sprites[i]; if(!s.alive) continue;
+        const dx=s.x-player.x, dy=s.y-player.y, dist=Math.hypot(dx,dy);
+        const ang=Math.atan2(dy,dx)-player.ang; let a=ang; while(a<-Math.PI)a+=TAU; while(a>Math.PI)a-=TAU;
+        const inFront=Math.abs(a)<player.fov*0.8; const fade=clamp(1 - dist/16, 0, 1);
+        if(dist<22 && inFront) projected.push({i,s,dist,a,fade});
+        // auto-pickup loot if very close (QoL)
+        if(s.type==='loot' && dist<0.7) pickupLoot(s);
+      }
+      projected.sort((A,B)=>B.dist-A.dist);
+      const nameplates=[];
+      for(const p of projected){
+        const s=p.s; const screenX=(0.5 + (Math.tan(p.a)/Math.tan(player.fov/2))*0.5)*W;
+        const size=Math.min(H,(H/Math.max(0.2,p.dist))*0.9);
+        const yBase=H*0.56 + (0.1*H);
+        const fog=p.fade;
+        if(s.type==='npc'){
+          ctx.globalAlpha=fog*0.9; ctx.fillStyle='#6a2cff';
+          ctx.beginPath(); ctx.ellipse(screenX,yBase,size*0.25,size*0.35,0,0,TAU); ctx.fill();
+          ctx.globalAlpha=1; nameplates.push({x:screenX,y:yBase-size*0.4,text:s.name, show:p.dist<3.2});
+        } else if(s.type==='brazier'){
+          const pulse=(Math.sin(t*7 + s.x*3 + s.y*5)*0.5+0.5);
+          ctx.globalAlpha=clamp(fog*0.95,0,0.95); ctx.fillStyle=`rgba(255,120,30,${0.7+0.3*pulse})`;
+          ctx.beginPath(); ctx.ellipse(screenX,yBase,size*0.08,size*0.14,0,0,TAU); ctx.fill(); ctx.globalAlpha=1;
+          const rg=ctx.createRadialGradient(screenX,yBase,2,screenX,yBase,size*0.6);
+          rg.addColorStop(0,'rgba(255,100,20,0.35)'); rg.addColorStop(1,'rgba(0,0,0,0)');
+          ctx.fillStyle=rg; ctx.fillRect(screenX-size*0.6,yBase-size*0.6,size*1.2,size*1.2);
+        } else if(s.type==='loot'){
+          ctx.globalAlpha=clamp(fog,0,1);
+          const col = s.kind==='gold' ? '#ffd56a' : (s.kind==='brimstone' ? '#ff5a2a' : '#fff2b0');
+          ctx.fillStyle=col; ctx.beginPath(); ctx.ellipse(screenX, yBase, size*0.09, size*0.09, 0, 0, TAU); ctx.fill();
+          ctx.globalAlpha=1;
+        } else {
+          // enemies
+          const isMagma=s.type==='magma'; const baseCol=isMagma?[255,80,20]:[250,245,210]; const rim=!isMagma?[255,255,255]:[255,160,80];
+          ctx.globalAlpha=clamp(fog*0.95,0,0.95); ctx.beginPath(); ctx.ellipse(screenX,yBase,size*0.22,size*0.32,0,0,TAU);
+          const grd=ctx.createLinearGradient(screenX-size*0.2,yBase-size*0.3,screenX+size*0.2,yBase+size*0.3);
+          grd.addColorStop(0,`rgba(${rim[0]},${rim[1]},${rim[2]},0.9)`); grd.addColorStop(1,`rgba(${baseCol[0]},${baseCol[1]},${baseCol[2]},0.9)`);
+          ctx.fillStyle=grd; ctx.fill(); ctx.globalAlpha=1;
+          if(!isMagma){
+            const rg=ctx.createRadialGradient(screenX, yBase-size*0.25, 4, screenX, yBase-size*0.25, size*0.5);
+            rg.addColorStop(0,'rgba(255,255,200,0.35)'); rg.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=rg; ctx.fillRect(screenX-size*0.5, yBase-size*0.75, size, size);
+          }
+        }
+      }
+      // nameplates
+      const ui=document.getElementById('ui'); ui.innerHTML='';
+      for(const n of nameplates){
+        const d=document.createElement('div'); d.className='nameplate'+(n.show?' show':'');
+        d.textContent=n.text; d.style.left=n.x+'px'; d.style.top=n.y+'px'; ui.appendChild(d);
+      }
+    }
+
+    function drawWeapon(t){
+      const swing = player.attackCooldown>0 ? (1 - player.attackCooldown/0.5) : 0;
+      const angle = Math.sin(swing*Math.PI)*0.7;
+      const cx=W*0.7, cy=H*0.76;
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(-0.9+angle);
+      ctx.beginPath(); ctx.moveTo(-8,40); ctx.lineTo(12,30); ctx.lineTo(24,-110); ctx.lineTo(14,-140); ctx.lineTo(0,-110); ctx.closePath();
+      ctx.fillStyle='#4a0d0d'; ctx.fill();
+      ctx.strokeStyle='rgba(255,80,40,0.6)'; ctx.lineWidth=2; ctx.stroke();
+      for(let i=0;i<5;i++){ ctx.beginPath(); ctx.moveTo(8,-20-i*20); ctx.lineTo(36,-24-i*20); ctx.lineTo(12,-30-i*20); ctx.closePath(); ctx.fillStyle='rgba(255,70,20,0.6)'; ctx.fill(); }
+      ctx.restore();
+    }
+
+    function drawParticles(dt){
+      for(let i=particles.length-1;i>=0;i--){
+        const p=particles[i]; p.t+=dt; if(p.t>p.life){ particles.splice(i,1); continue; }
+        const alpha=1 - p.t/p.life; p.x+=p.vx*dt; p.y+=p.vy*dt;
+        const dx=p.x-player.x, dy=p.y-player.y, dist=Math.hypot(dx,dy);
+        const a=Math.atan2(dy,dx)-player.ang; if(Math.abs(a)>player.fov*0.8 || dist>20) continue;
+        const screenX=(0.5 + (Math.tan(a)/Math.tan(player.fov/2))*0.5)*W;
+        const size=Math.min(H,(H/Math.max(0.2,dist))*0.4);
+        ctx.globalAlpha=alpha*clamp(1 - dist/16,0,1); ctx.fillStyle=p.color;
+        if(p.kind==='feather'){ ctx.beginPath(); ctx.ellipse(screenX,H*0.58,size*0.12,size*0.04,0.6,0,TAU); ctx.fill(); }
+        else { ctx.fillRect(screenX-size*0.03, H*0.58-size*0.03, size*0.06, size*0.06); }
+        ctx.globalAlpha=1;
+      }
+    }
+
+    // ==================== UPDATE LOOP ====================
+    function update(dt,t){
+      // Movement
+      let moveX=0,moveY=0;
+      if(keys['KeyW']) moveY-=1; if(keys['KeyS']) moveY+=1; if(keys['KeyA']) moveX-=1; if(keys['KeyD']) moveX+=1;
+      moveX += clamp(moveDX, -1, 1); moveY += clamp(moveDY, -1, 1);
+      const len=Math.hypot(moveX,moveY); if(len>1){ moveX/=len; moveY/=len; }
+      let sp = player.speed * (player.stamina>0.15?1:0.6);
+      if(speedBoostTimer>0){ sp*=1.1; speedBoostTimer -= dt; }
+      const forward={x:Math.cos(player.ang), y:Math.sin(player.ang)};
+      const right={x:Math.cos(player.ang+Math.PI/2), y:Math.sin(player.ang+Math.PI/2)};
+      const vx=(forward.x*(-moveY) + right.x*(moveX)) * sp;
+      const vy=(forward.y*(-moveY) + right.y*(moveX)) * sp;
+      tryMove(vx*dt, vy*dt);
+
+      // Look
+      let lookX=0; if(keys['ArrowLeft']) lookX-=1; if(keys['ArrowRight']) lookX+=1; lookX += clamp(lookDX,-1,1);
+      player.ang += lookX * 1.8 * dt;
+
+      // Gate logic: open if near or levers toggled
+      const nearGate = Math.hypot(player.x-(gate.x+0.5), player.y-(gate.y+0.5)) < 1.6;
+      const leverOpen = levers.some(L=>L.toggled);
+      const prev=gate.open;
+      gate.open = nearGate || leverOpen;
+      if(gate.open && !prev){ setTile(gate.x, gate.y, 0); AUDIO&&AUDIO.sfxGate(); }
+      if(!gate.open && prev){ setTile(gate.x, gate.y, 2); AUDIO&&AUDIO.sfxGate(); }
+      gate.anim = lerp(gate.anim, gate.open?1:0, Math.min(1, dt*4));
+
+      // Enemies chase
+      for(const s of sprites){
+        if(!s.alive) continue;
+        if(s.type==='magma'||s.type==='angel'){
+          const dx=player.x - s.x, dy=player.y - s.y, dist=Math.hypot(dx,dy);
+          const chase = s.type==='magma'?0.6:0.85;
+          if(dist<9){ s.x += (dx/dist)*chase*dt; s.y += (dy/dist)*chase*dt; }
+        }
+      }
+
+      // Stamina
+      if(player.attackCooldown>0) player.attackCooldown=Math.max(0, player.attackCooldown-dt);
+      if(len>0.65){ player.stamina=Math.max(0, player.stamina - 0.15*dt); }
+      else { player.stamina=Math.min(player.stamMax, player.stamina + player.stamRegen*dt); }
+
+      // Interaction progress (lever channeling)
+      updateInteraction(dt);
+
+      // Citadel choir swell + fanfare trigger once
+      const dCit = distToCitadel(player.x, player.y);
+      const prox = clamp(1 - dCit/16, 0, 1);
+      if(AUDIO) AUDIO.ost.setCitadelProximity(prox);
+      if(prox>0.9 && !update._fanfarePlayed){ AUDIO&&AUDIO.sfxFanfare(); update._fanfarePlayed=true; }
+    }
+
+    function tryMove(dx,dy){
+      const nx=player.x+dx, ny=player.y+dy;
+      if(tileAt(nx, player.y)===0) player.x=nx;
+      if(tileAt(player.x, ny)===0) player.y=ny;
+    }
+
+    let last = performance.now();
+    function loop(){
+      const now=performance.now(); const dt=Math.min(0.033, (now-last)/1000); last=now;
+      const t=now/1000;
+      update(dt,t);
+      castAndRender(dt,t);
+      requestAnimationFrame(loop);
+    }
+    loop();
+
+  })();
+  </script>
+</body>
+</html>
